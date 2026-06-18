@@ -146,6 +146,30 @@ def load_axis_meta(
     return float(fs), float(fc)
 
 
+def find_schemes(rx_dir: str, explicit: str | None) -> str | None:
+    """Locate a transmitter ``schemes.yaml`` to overlay on the time axis.
+
+    Precedence:
+      1. an explicit ``--schemes`` path (used verbatim, even if missing);
+      2. ``<rx>/schemes.yaml`` -- a manual copy into the rx dir;
+      3. a sibling ``tx*/schemes.yaml`` in the recording dir -- where the
+         transmitter actually writes it, so no copy is needed.
+    Returns ``None`` if nothing is found.
+    """
+    if explicit:
+        return explicit
+    local = os.path.join(rx_dir, "schemes.yaml")
+    if os.path.exists(local):
+        return local
+    recording_dir = os.path.dirname(rx_dir.rstrip("/\\"))
+    if recording_dir:
+        for tx in sorted(glob.glob(os.path.join(recording_dir, "tx*"))):
+            cand = os.path.join(tx, "schemes.yaml")
+            if os.path.exists(cand):
+                return cand
+    return None
+
+
 def load_schemes(path: str | None) -> list[dict]:
     """Load a transmitter ``schemes.yaml`` for the time-axis overlay.
 
@@ -476,8 +500,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--show", action="store_true", help="Display the figure too.")
     p.add_argument(
         "--schemes",
-        help="Path to a schemes.yaml to overlay on the "
-        "time axis (default: auto-detect schemes.yaml in the rx dir).",
+        help="Path to a tx schemes.yaml to overlay on the time axis "
+        "(default: auto-detect schemes.yaml in the rx dir, then in a "
+        "sibling tx* dir).",
     )
     p.add_argument(
         "--no-schemes",
@@ -569,9 +594,13 @@ def main(argv=None) -> None:
 
     schemes = []
     if not args.no_schemes:
-        schemes = load_schemes(args.schemes or os.path.join(rx_dir, "schemes.yaml"))
+        schemes_path = find_schemes(rx_dir, args.schemes)
+        schemes = load_schemes(schemes_path)
         if schemes:
-            print(f"schemes: loaded {len(schemes)} burst(s) for overlay.")
+            print(
+                f"schemes: loaded {len(schemes)} burst(s) from "
+                f"{schemes_path} for overlay."
+            )
 
     plot_waterfall(
         spec,

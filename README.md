@@ -13,7 +13,8 @@ raw captures: tones, interference, drift, sample loss, dead bands, etc.
 - **Transmitter overlay:** if a `schemes.yaml` is present, labeled time bands for
   each transmitted modulation burst are drawn on the waterfall, so you can see
   whether the receiver caught each scheme. `schemes.yaml` is a transmitter
-  artifact (it ships in the `tx*` dir) — copy it into the rx dir to use it; see
+  artifact (it ships in the `tx*` dir) — it is auto-detected from a sibling
+  `tx*` dir, or point at one with `--schemes`; see
   [Scheme overlay](#scheme-overlay-transmitter-schedule).
 
 ## Install
@@ -84,7 +85,7 @@ Common options:
 | `--sample-rate` / `--center-freq` | from `meta.yaml` | Override axis calibration (Hz). |
 | `--cmap` | `viridis` | Matplotlib colormap. |
 | `--vmin` / `--vmax` | 5th / 99.5th pct | Color scale floor/ceiling (dB). |
-| `--schemes` / `--no-schemes` | auto-detect | Overlay TX modulation bursts from a `schemes.yaml` (auto-loaded from the rx dir); `--no-schemes` disables it. |
+| `--schemes` / `--no-schemes` | auto-detect | Overlay TX modulation bursts from a `schemes.yaml` (auto-detected in the rx dir, then a sibling `tx*` dir); `--no-schemes` disables it. |
 | `--show` | off | Also open an interactive window. |
 
 ### Large recordings
@@ -107,15 +108,14 @@ vs. the recording total, so you can see the striding in action.
 
 `schemes.yaml` lists the transmitted modulation bursts (BPSK, QPSK, …) with epoch
 start/stop times. It is generated with the **transmitter**, so in a recording it
-sits in the `tx*` directory — *not* the `rx*` directory this tool reads. To use
-it, make it available to the rx dir one of two ways:
+sits in the `tx*` directory — *not* the `rx*` directory this tool reads. No copy
+is needed: it is auto-detected, and can be pointed at explicitly.
 
 ```bash
-# 1. Copy it into the rx directory (auto-loaded as <rx>/schemes.yaml):
-cp recording/tx0/schemes.yaml recording/rx0/schemes.yaml
+# 1. Auto-detect: <rx>/schemes.yaml first, then a sibling tx*/schemes.yaml.
 python waterfall.py recording/rx0
 
-# 2. Or point at it directly, no copy needed:
+# 2. Or point at it directly:
 python waterfall.py recording/rx0 --schemes recording/tx0/schemes.yaml
 ```
 
