@@ -1,0 +1,20 @@
+[project]
+name = "waterfall-viz"
+version = "0.1.0"
+description = "Waterfall/spectrogram viewer for iq-sdk IQ recordings."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "iq-sdk",
+    "numpy>=2.4.6",
+    "pyyaml>=6.0.3",
+    "matplotlib>=3.11",
+]
+
+# A run-it-in-place tool, not a distributed package: sync deps, don't build self.
+[tool.uv]
+package = false
+
+# iq-sdk isn't on PyPI; pin the exact commit. uv.lock records it + a hash.
+[tool.uv.sources]
+iq-sdk = { git = "https://github.com/deep-spectrum/iq-sdk.git", rev = "98fd8fd45d11ed2409b0e2d973d73f8d3c37bfbe" }
