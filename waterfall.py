@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import sys
 import time
 
@@ -203,6 +204,29 @@ def load_schemes(path: str | None) -> list[dict]:
 # ---------------------------------------------------------------------------
 # DSP
 # ---------------------------------------------------------------------------
+
+
+def sort_chunks_in_place(rx: Receiver) -> None:
+    """Order ``rx.metadata.chunks`` by the numeric index in each *filename*.
+
+    ``iq_sdk`` keys its chunk sort on the first digit-run of the *full path*, so
+    any digit in the recording path (e.g. ``.../2.45GHz/rx0``) makes every
+    chunk's key identical and the order collapses to filesystem (``glob``)
+    order. ``read_frames`` indexes ``meta.chunks`` positionally and assumes
+    position == chunk number, so a wrong order silently shuffles the waterfall
+    in chunk-sized time blocks -- or crashes when the short final chunk lands
+    mid-list. The list is shared with ``read_frames``, so sorting it in place
+    fixes both call sites.
+    """
+
+    def chunk_index(path: str) -> int:
+        # Match the digits immediately after the ``iq`` prefix, e.g. ``iq03.c8``
+        # -> 3. Anchoring to ``iq`` avoids picking up the ``8`` in the ``.c8``
+        # extension or digits elsewhere in the name.
+        m = re.search(r"iq(\d+)", os.path.basename(path))
+        return int(m.group(1)) if m else 0
+
+    rx.metadata.chunks.sort(key=chunk_index)
 
 
 def read_frames(rx: Receiver, f_start: int, n_frames: int, nfft: int) -> np.ndarray:
@@ -526,6 +550,7 @@ def main(argv=None) -> None:
     rx_dir = resolve_rx_dir(args.path)
     fs, fc = load_axis_meta(rx_dir, args.sample_rate, args.center_freq)
     rx = Receiver(rx_dir, interval=args.nfft)
+    sort_chunks_in_place(rx)
 
     # Clamp to the chunks actually present on disk: meta.yaml declares the full
     # recording, but a partial / in-progress copy may have only the first few
