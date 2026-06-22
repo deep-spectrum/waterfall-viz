@@ -147,6 +147,56 @@ def load_axis_meta(
     return float(fs), float(fc)
 
 
+def resolve_bandwidth(
+    rx_dir: str, override: float | None, full_band: bool, fs: float
+) -> float | None:
+    """Determine the occupied-signal bandwidth (Hz) to confine the axis to.
+
+    The capture spans the full sample rate (the whole Nyquist width), but the
+    signal of interest usually occupies a narrower band; outside it is just the
+    receiver's out-of-band noise floor, far quieter than the in-band content.
+
+    Priority:
+      1. ``--full-band`` -> ``None`` (show the entire span, no cropping).
+      2. ``--bandwidth`` override.
+      3. ``parameters.bandwidth`` from ``meta.yaml`` (the configured filter
+         width -- the occupied band, even though it is unreliable as a sample
+         *rate*, see ``load_axis_meta``).
+
+    Returns ``None`` (no crop) when nothing usable is found, the value is
+    non-positive, or it is >= ``fs`` (cropping to >= the full span is a no-op).
+    """
+    if full_band:
+        return None
+
+    bw = override
+    bw_src = "--bandwidth"
+    if bw is None:
+        meta_path = os.path.join(rx_dir, "meta.yaml")
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = yaml.safe_load(f) or {}
+            params = meta.get("parameters", {}) if isinstance(meta, dict) else {}
+            mbw = params.get("bandwidth")
+            if mbw:
+                bw = float(mbw)
+                bw_src = "parameters.bandwidth"
+
+    if bw is None or bw <= 0:
+        return None
+    if bw >= fs:
+        print(
+            f"bandwidth {bw / 1e6:.4f} MHz >= sample rate "
+            f"{fs / 1e6:.4f} MHz; showing full span."
+        )
+        return None
+    print(
+        f"bandwidth: {bw / 1e6:.4f} MHz (from {bw_src}); "
+        f"confining frequency axis to center +/- {bw / 2e6:.4f} MHz."
+    )
+    return bw
+
+
 def find_schemes(rx_dir: str, explicit: str | None) -> str | None:
     """Locate a transmitter ``schemes.yaml`` to overlay on the time axis.
 
@@ -339,6 +389,32 @@ def build_waterfall(
     return spec, freqs_hz, times_s, samples_read
 
 
+def crop_to_band(
+    spec: np.ndarray, freqs_hz: np.ndarray, fc: float, bandwidth: float | None
+):
+    """Crop the spectrogram columns and freq axis to ``fc +/- bandwidth/2``.
+
+    Restricting to the occupied band before the color scale is auto-fit is the
+    point of the crop: the default ``vmin``/``vmax`` are percentiles of the
+    whole ``spec``, so the quiet out-of-band columns otherwise drag ``vmin``
+    down toward the out-of-band floor and waste most of the colormap on empty
+    spectrum, washing out subtle in-band structure. After cropping, the range
+    spans only the in-band noise floor to the signal peaks, so faint features
+    become visible.
+
+    No-op (returns the inputs unchanged) when ``bandwidth`` is falsy or the
+    band would keep fewer than 2 bins or every bin.
+    """
+    if not bandwidth or bandwidth <= 0:
+        return spec, freqs_hz
+    lo, hi = fc - bandwidth / 2.0, fc + bandwidth / 2.0
+    keep = (freqs_hz >= lo) & (freqs_hz <= hi)
+    n_keep = int(keep.sum())
+    if n_keep < 2 or n_keep == len(freqs_hz):
+        return spec, freqs_hz
+    return spec[:, keep], freqs_hz[keep]
+
+
 # ---------------------------------------------------------------------------
 # Plot
 # ---------------------------------------------------------------------------
@@ -505,6 +581,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--sample-rate", type=float, help="Override sample rate (Hz).")
     p.add_argument("--center-freq", type=float, help="Override center frequency (Hz).")
     p.add_argument(
+        "--bandwidth",
+        type=float,
+        help="Confine the frequency axis (and color normalization) to "
+        "center +/- bandwidth/2 (Hz). Default: parameters.bandwidth from "
+        "meta.yaml, if present and below the sample rate.",
+    )
+    p.add_argument(
+        "--full-band",
+        action="store_true",
+        help="Show the full sample-rate span; disable bandwidth cropping.",
+    )
+    p.add_argument(
         "--average",
         action="store_true",
         help="Average power across each stride window (reads all "
@@ -613,6 +701,12 @@ def main(argv=None) -> None:
         args.average,
         args.block_frames,
     )
+
+    # Confine to the occupied band so the auto-scaled color range isn't
+    # dominated by the quiet out-of-band spectrum.
+    bandwidth = resolve_bandwidth(rx_dir, args.bandwidth, args.full_band, fs)
+    spec, freqs_hz = crop_to_band(spec, freqs_hz, fc, bandwidth)
+
     ts = rx.metadata.timestamps
     abs_start = float(ts[start_frame]) if start_frame < len(ts) else None
     rec_t0 = float(ts[0]) if len(ts) else None

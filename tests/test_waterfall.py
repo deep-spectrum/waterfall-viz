@@ -395,6 +395,77 @@ def main():
             os.path.exists(out2) and os.path.getsize(out2) > 5000,
         )
 
+        # --- 9. bandwidth confinement: axis crop + normalization benefit ---
+        print("\n[9] bandwidth confinement (axis crop + color normalization)")
+        # resolve_bandwidth: meta has bandwidth = 0.8*fs (below fs), so it is
+        # used by default; --full-band disables; >= fs is a no-op; explicit wins.
+        bw_meta = wf.resolve_bandwidth(rx_dir, None, False, fs)
+        check(
+            "bandwidth read from meta.yaml (0.8*fs)",
+            bw_meta is not None and abs(bw_meta - 0.8 * fs) < 1.0,
+            f"{bw_meta}",
+        )
+        check(
+            "--full-band disables cropping (None)",
+            wf.resolve_bandwidth(rx_dir, None, True, fs) is None,
+        )
+        check(
+            "bandwidth >= sample rate is a no-op (None)",
+            wf.resolve_bandwidth(rx_dir, 2.0 * fs, False, fs) is None,
+        )
+        check(
+            "explicit --bandwidth overrides meta",
+            wf.resolve_bandwidth(rx_dir, 0.5 * fs, False, fs) == 0.5 * fs,
+        )
+
+        # crop_to_band: keep only bins inside fc +/- bw/2, tones preserved.
+        half = bw_meta / 2.0
+        spec_c, freqs_c = wf.crop_to_band(spec, freqs, fc, bw_meta)
+        check(
+            "cropped axis lies within center +/- bandwidth/2",
+            freqs_c.min() >= fc - half - 1 and freqs_c.max() <= fc + half + 1,
+            f"[{freqs_c.min() / 1e6:.4f}, {freqs_c.max() / 1e6:.4f}] MHz",
+        )
+        check(
+            "crop drops out-of-band bins (fewer columns, same rows)",
+            spec_c.shape[1] < spec.shape[1] and spec_c.shape[0] == spec.shape[0],
+            f"{spec.shape[1]} -> {spec_c.shape[1]} bins",
+        )
+        # all three in-band tones survive the crop
+        in_band = all(abs(off) <= half for off in tones)
+        present = all(
+            np.min(np.abs(freqs_c - (fc + off))) <= (fs / nfft) for off in tones
+        )
+        check("all in-band tones retained after crop", in_band and present)
+        # no-op guards
+        check(
+            "crop is a no-op for bandwidth=None",
+            wf.crop_to_band(spec, freqs, fc, None)[1].shape == freqs.shape,
+        )
+        check(
+            "crop is a no-op when band exceeds the full span",
+            wf.crop_to_band(spec, freqs, fc, 10.0 * fs)[1].shape == freqs.shape,
+        )
+
+        # Normalization benefit: with quiet out-of-band columns, cropping to the
+        # band raises the 5th-percentile floor (the default vmin), tightening
+        # the color range onto the in-band content. Build a spec where the
+        # outer half of the bins is ~30 dB quieter than the in-band region.
+        n = 1000
+        synth = np.full((4, n), -90.0, dtype=np.float32)  # in-band floor
+        edge = n // 4
+        synth[:, :edge] = -120.0  # quiet out-of-band (left)
+        synth[:, -edge:] = -120.0  # quiet out-of-band (right)
+        fz = fc + (np.arange(n) - n / 2) * (fs / n)  # uniform axis spanning fs
+        vmin_full = float(np.percentile(synth, 5))
+        s_crop, _ = wf.crop_to_band(synth, fz, fc, fs / 2.0)
+        vmin_crop = float(np.percentile(s_crop, 5))
+        check(
+            "cropping raises the 5th-pct floor (better normalization)",
+            vmin_crop > vmin_full + 20,
+            f"vmin full={vmin_full:.1f} dB -> cropped={vmin_crop:.1f} dB",
+        )
+
         print(f"\n==== {PASS} passed, {FAIL} failed ====")
         sys.exit(1 if FAIL else 0)
     finally:
