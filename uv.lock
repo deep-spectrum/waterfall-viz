@@ -165,7 +165,7 @@ wheels = [
 [[package]]
 name = "iq-sdk"
 version = "0.1.0"
-source = { git = "https://github.com/deep-spectrum/iq-sdk.git?rev=98fd8fd45d11ed2409b0e2d973d73f8d3c37bfbe#98fd8fd45d11ed2409b0e2d973d73f8d3c37bfbe" }
+source = { git = "https://github.com/deep-spectrum/iq-sdk.git?rev=7c9d86586aa566411270466696ece8db4dcc9c12#7c9d86586aa566411270466696ece8db4dcc9c12" }
 dependencies = [
     { name = "abstract-dataloader" },
     { name = "jaxtyping" },
@@ -735,7 +735,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "iq-sdk", git = "https://github.com/deep-spectrum/iq-sdk.git?rev=98fd8fd45d11ed2409b0e2d973d73f8d3c37bfbe" },
+    { name = "iq-sdk", git = "https://github.com/deep-spectrum/iq-sdk.git?rev=7c9d86586aa566411270466696ece8db4dcc9c12" },
     { name = "matplotlib", specifier = ">=3.11" },
     { name = "numpy", specifier = ">=2.4.6" },
     { name = "pyyaml", specifier = ">=6.0.3" },
