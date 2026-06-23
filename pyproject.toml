@@ -17,4 +17,4 @@ package = false
 
 # iq-sdk isn't on PyPI; pin the exact commit. uv.lock records it + a hash.
 [tool.uv.sources]
-iq-sdk = { git = "https://github.com/deep-spectrum/iq-sdk.git", rev = "98fd8fd45d11ed2409b0e2d973d73f8d3c37bfbe" }
+iq-sdk = { git = "https://github.com/deep-spectrum/iq-sdk.git", rev = "7c9d86586aa566411270466696ece8db4dcc9c12" }
