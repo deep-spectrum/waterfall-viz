@@ -14,6 +14,9 @@ Examples:
     # Zoom into a 20 ms slice starting 10 ms in, with a finer FFT
     python waterfall.py path/to/rec/rx0 --start-sec 0.01 --duration-sec 0.02 --nfft 2048
 
+    # Render only chunks [10, 20)
+    python waterfall.py path/to/rec/rx0 --start-chunk 10 --end-chunk 20
+
     # Override the axis calibration (e.g. if meta.yaml is incomplete)
     python waterfall.py path/to/rec/rx0 --sample-rate 50e6 --center-freq 2.4e9
 """
@@ -37,6 +40,11 @@ WINDOWS = {
     "blackman": np.blackman,
     "rect": np.ones,
 }
+
+# Chunks to render when --start-chunk is given without an explicit end: a
+# bounded default so "start here" doesn't accidentally read to the end of a
+# huge recording.
+DEFAULT_CHUNK_SPAN = 10
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +584,86 @@ def plot_waterfall(
 
 
 # ---------------------------------------------------------------------------
+# Range selection
+# ---------------------------------------------------------------------------
+
+
+def resolve_frame_range(
+    args: argparse.Namespace,
+    fs: float,
+    nfft: int,
+    samples_per_chunk: int,
+    total_samples: int,
+    total_frames: int,
+    n_chunks: int,
+) -> tuple[int, int]:
+    """Map the start/extent CLI selectors to a ``[start_frame, end_frame)`` pair.
+
+    Start selectors (mutually exclusive, validated in ``main``): ``--start-chunk``
+    (chunk index), ``--start-sample``, ``--start-sec``. End selectors:
+    ``--end-chunk``, ``--num-frames``, ``--duration-sec``.
+
+    ``--end-chunk`` is an *absolute* chunk index from the recording start (so
+    ``--start-chunk 10 --end-chunk 20`` renders chunks ``[10, 20)``);
+    ``--num-frames`` / ``--duration-sec`` extend from the chosen start. The chunk
+    offset goes through samples, so it composes with any ``--nfft``.
+
+    Chunk-index edge cases (``n_chunks`` = chunks present on disk):
+      * ``--start-chunk`` at or past the last chunk is fatal -- there is nothing
+        to render, and silently clamping it would hide the mistake.
+      * ``--end-chunk`` past the last chunk is clamped to the last one with a
+        note (a partial / in-progress copy is a normal case, not an error).
+      * ``--start-chunk`` with no end selector renders ``DEFAULT_CHUNK_SPAN``
+        chunks, so "start here" stays bounded on a huge recording.
+
+    The result is also clamped to the frames present on disk; ``build_waterfall``
+    rejects an empty (``end <= start``) range.
+    """
+    if args.start_chunk is not None:
+        if args.start_chunk >= n_chunks:
+            raise SystemExit(
+                f"--start-chunk {args.start_chunk} is past the last available "
+                f"chunk (index {n_chunks - 1} of {n_chunks} present)."
+            )
+        start_sample = args.start_chunk * samples_per_chunk
+    elif args.start_sample is not None:
+        start_sample = args.start_sample
+    elif args.start_sec is not None:
+        start_sample = int(round(args.start_sec * fs))
+    else:
+        start_sample = 0
+    start_sample = max(0, min(start_sample, total_samples))
+    start_frame = min(start_sample // nfft, total_frames)
+
+    if args.end_chunk is not None:
+        end_chunk = args.end_chunk
+        if end_chunk > n_chunks:
+            print(
+                f"note: --end-chunk {end_chunk} exceeds the {n_chunks} chunk(s) "
+                f"present; stopping at the last available chunk."
+            )
+            end_chunk = n_chunks
+        end_frame = (end_chunk * samples_per_chunk) // nfft
+    elif args.num_frames is not None:
+        end_frame = start_frame + args.num_frames
+    elif args.duration_sec is not None:
+        end_frame = start_frame + int(round(args.duration_sec * fs)) // nfft
+    elif args.start_chunk is not None:
+        # Chunk start with no explicit end: render a bounded default span.
+        end_chunk = min(args.start_chunk + DEFAULT_CHUNK_SPAN, n_chunks)
+        print(
+            f"note: no end selector; rendering chunks "
+            f"[{args.start_chunk}, {end_chunk}) "
+            f"(default span {DEFAULT_CHUNK_SPAN})."
+        )
+        end_frame = (end_chunk * samples_per_chunk) // nfft
+    else:
+        end_frame = total_frames
+    end_frame = min(end_frame, total_frames)
+    return start_frame, end_frame
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -599,8 +687,22 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--start-sec", type=float, help="Start offset in seconds.")
     p.add_argument("--start-sample", type=int, help="Start offset in samples.")
+    p.add_argument(
+        "--start-chunk",
+        type=int,
+        help="Start at this chunk index (inclusive). With no end selector, "
+        f"renders the next {DEFAULT_CHUNK_SPAN} chunks. Mutually exclusive "
+        "with --start-sample / --start-sec.",
+    )
     p.add_argument("--duration-sec", type=float, help="Extent to cover, in seconds.")
     p.add_argument("--num-frames", type=int, help="Extent to cover, in FFT frames.")
+    p.add_argument(
+        "--end-chunk",
+        type=int,
+        help="Stop before this chunk index (exclusive; must be > start chunk). "
+        "Clamped to the last available chunk if it exceeds what is present. "
+        "Mutually exclusive with --duration-sec / --num-frames.",
+    )
     p.add_argument("--sample-rate", type=float, help="Override sample rate (Hz).")
     p.add_argument("--center-freq", type=float, help="Override center frequency (Hz).")
     p.add_argument(
@@ -659,10 +761,24 @@ def main(argv=None) -> None:
         raise SystemExit("--nfft must be positive.")
     if args.block_frames <= 0:
         raise SystemExit("--block-frames must be positive.")
-    if args.start_sample is not None and args.start_sec is not None:
-        raise SystemExit("Use only one of --start-sample / --start-sec.")
-    if args.duration_sec is not None and args.num_frames is not None:
-        raise SystemExit("Use only one of --duration-sec / --num-frames.")
+    n_start = sum(
+        x is not None for x in (args.start_sample, args.start_sec, args.start_chunk)
+    )
+    if n_start > 1:
+        raise SystemExit(
+            "Use only one of --start-sample / --start-sec / --start-chunk."
+        )
+    n_end = sum(
+        x is not None for x in (args.duration_sec, args.num_frames, args.end_chunk)
+    )
+    if n_end > 1:
+        raise SystemExit("Use only one of --duration-sec / --num-frames / --end-chunk.")
+    if args.start_chunk is not None and args.start_chunk < 0:
+        raise SystemExit("--start-chunk must be >= 0.")
+    if args.end_chunk is not None:
+        start_chunk = args.start_chunk if args.start_chunk is not None else 0
+        if args.end_chunk <= start_chunk:
+            raise SystemExit("--end-chunk must be greater than the start chunk.")
 
     rx_dir = resolve_rx_dir(args.path)
     fs, fc = load_axis_meta(rx_dir, args.sample_rate, args.center_freq)
@@ -691,24 +807,15 @@ def main(argv=None) -> None:
             f"({present_samples:,} of {meta_total:,} samples)."
         )
 
-    # Start offset -> starting frame.
-    if args.start_sample is not None:
-        start_sample = args.start_sample
-    elif args.start_sec is not None:
-        start_sample = int(round(args.start_sec * fs))
-    else:
-        start_sample = 0
-    start_sample = max(0, min(start_sample, total_samples))
-    start_frame = min(start_sample // args.nfft, total_frames)
-
-    # Extent -> ending frame.
-    if args.num_frames is not None:
-        end_frame = start_frame + args.num_frames
-    elif args.duration_sec is not None:
-        end_frame = start_frame + int(round(args.duration_sec * fs)) // args.nfft
-    else:
-        end_frame = total_frames
-    end_frame = min(end_frame, total_frames)
+    start_frame, end_frame = resolve_frame_range(
+        args,
+        fs,
+        args.nfft,
+        rx.metadata.samples_per_chunk,
+        total_samples,
+        total_frames,
+        len(rx.metadata.chunks),
+    )
 
     if args.output is None:
         rx_dir_clean = rx_dir.rstrip("/\\")

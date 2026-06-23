@@ -493,6 +493,146 @@ def main():
         )
         check("no --ref-level falls back to meta", eff_none == -20.0, f"{eff_none}")
 
+        # --- 11. chunk-based slicing (resolve_frame_range) ---
+        print("\n[11] chunk slicing (--start-chunk / --end-chunk)")
+        spc_chunk = rx.metadata.samples_per_chunk  # 3*4096 = 12288
+        tot_samp = rx.metadata.total_samples  # 16*4096 = 65536
+        tot_fr = tot_samp // nfft  # 64
+        n_chunks = len(rx.metadata.chunks)  # ceil(16/3) = 6
+
+        def frange(*cli):
+            ns = wf.parse_args([rx_dir, *cli])
+            with contextlib.redirect_stdout(io.StringIO()):
+                return wf.resolve_frame_range(
+                    ns, fs, nfft, spc_chunk, tot_samp, tot_fr, n_chunks
+                )
+
+        # chunks [1, 3) -> samples [12288, 36864) -> frames [12, 36)
+        s, e = frange("--start-chunk", "1", "--end-chunk", "3")
+        check(
+            "chunk slice [1,3) maps to the right frame range",
+            (s, e) == (1 * spc_chunk // nfft, 3 * spc_chunk // nfft),
+            f"({s}, {e})",
+        )
+        check("end-chunk is exclusive (end > start)", e > s, f"({s}, {e})")
+        # --start-chunk N == --start-sample N*samples_per_chunk
+        s_smp, _ = frange("--start-sample", str(2 * spc_chunk))
+        s_chk, _ = frange("--start-chunk", "2")
+        check(
+            "--start-chunk equals the equivalent --start-sample",
+            s_smp == s_chk,
+            f"sample={s_smp} chunk={s_chk}",
+        )
+        # default = whole present recording
+        check("no selectors -> whole recording", frange() == (0, tot_fr))
+        # --num-frames still extends from the chosen start
+        s_nf, e_nf = frange("--start-chunk", "1", "--num-frames", "5")
+        check(
+            "--num-frames extends from the chosen start",
+            e_nf - s_nf == 5,
+            f"({s_nf}, {e_nf})",
+        )
+
+        # --end-chunk past the last available chunk clamps (not an error).
+        s_oc, e_oc = frange("--start-chunk", "0", "--end-chunk", "999")
+        check(
+            "--end-chunk past last available clamps to the recording end",
+            e_oc == tot_fr,
+            f"({s_oc}, {e_oc}) tot_fr={tot_fr}",
+        )
+        buf_w = io.StringIO()
+        with contextlib.redirect_stdout(buf_w):
+            wf.resolve_frame_range(
+                wf.parse_args([rx_dir, "--end-chunk", "999"]),
+                fs,
+                nfft,
+                spc_chunk,
+                tot_samp,
+                tot_fr,
+                n_chunks,
+            )
+        check("over-long --end-chunk emits a clamp note", "exceeds" in buf_w.getvalue())
+
+        # --start-chunk with no end renders exactly DEFAULT_CHUNK_SPAN chunks
+        # (use a generous n_chunks/total so the span isn't itself clamped).
+        big = 100 * spc_chunk
+        with contextlib.redirect_stdout(io.StringIO()):
+            sd, ed = wf.resolve_frame_range(
+                wf.parse_args([rx_dir, "--start-chunk", "2"]),
+                fs,
+                nfft,
+                spc_chunk,
+                big,
+                big // nfft,
+                100,
+            )
+        check(
+            "start-chunk + no end renders DEFAULT_CHUNK_SPAN chunks",
+            ed - sd == wf.DEFAULT_CHUNK_SPAN * spc_chunk // nfft,
+            f"({sd}, {ed}) span={ed - sd} frames",
+        )
+        # ... and that default span is clamped to the recording when it overruns.
+        s_ds, e_ds = frange("--start-chunk", "1")
+        check(
+            "default span clamps to the recording end when it overruns",
+            e_ds == tot_fr,
+            f"({s_ds}, {e_ds})",
+        )
+
+        # mutual exclusion + ordering guards raise SystemExit in main().
+        def main_exits(cli):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    wf.main([rx_dir, *cli])
+            except SystemExit as ex:
+                return ex.code not in (None, 0)
+            except Exception:  # noqa: BLE001
+                return False
+            return False
+
+        check(
+            "two start selectors rejected",
+            main_exits(["--start-chunk", "1", "--start-sec", "0.01"]),
+        )
+        check(
+            "two end selectors rejected",
+            main_exits(["--end-chunk", "3", "--num-frames", "5"]),
+        )
+        check(
+            "--end-chunk <= start chunk rejected",
+            main_exits(["--start-chunk", "3", "--end-chunk", "2"]),
+        )
+        check("negative --start-chunk rejected", main_exits(["--start-chunk", "-1"]))
+        # start past the last available chunk is fatal (nothing to render)...
+        check(
+            "--start-chunk past last available rejected",
+            main_exits(["--start-chunk", str(n_chunks)]),
+        )
+        # ...but starting ON the last chunk is allowed (renders what is left).
+        check(
+            "--start-chunk on the last available chunk is allowed",
+            not main_exits(
+                ["--start-chunk", str(n_chunks - 1), "-o", os.path.join(tmp, "lc.png")]
+            ),
+        )
+
+        # end-to-end: a chunk slice renders and reports < 100% of the recording.
+        out_sl = os.path.join(tmp, "slice.png")
+        bufs = io.StringIO()
+        with contextlib.redirect_stdout(bufs):
+            wf.main([rx_dir, "-o", out_sl, "--start-chunk", "1", "--end-chunk", "3"])
+        slog = bufs.getvalue()
+        # frames [12,36) -> 24 frames * 1024 = 24576 of 65536 samples = 37.50%
+        check(
+            "chunk-sliced run reports the sliced fraction",
+            "37.50%" in slog,
+            slog.strip()[-160:],
+        )
+        check(
+            "chunk-sliced run wrote a PNG",
+            os.path.exists(out_sl) and os.path.getsize(out_sl) > 5000,
+        )
+
         print(f"\n==== {PASS} passed, {FAIL} failed ====")
         sys.exit(1 if FAIL else 0)
     finally:
