@@ -197,6 +197,25 @@ def resolve_bandwidth(
     return bw
 
 
+def load_ref_level(rx_dir: str) -> float | None:
+    """Read the optional ``parameters.ref_level`` (radio reference level, dB).
+
+    Surfaced purely as a debug annotation on the plot -- it does not affect the
+    DSP or normalization. Returns ``None`` when absent or unparseable.
+    """
+    meta_path = os.path.join(rx_dir, "meta.yaml")
+    if not os.path.exists(meta_path):
+        return None
+    with open(meta_path) as f:
+        meta = yaml.safe_load(f) or {}
+    params = meta.get("parameters", {}) if isinstance(meta, dict) else {}
+    rl = params.get("ref_level")
+    try:
+        return float(rl) if rl is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def find_schemes(rx_dir: str, explicit: str | None) -> str | None:
     """Locate a transmitter ``schemes.yaml`` to overlay on the time axis.
 
@@ -447,6 +466,7 @@ def plot_waterfall(
     total_samples,
     schemes=(),
     rec_t0_epoch=None,
+    ref_level=None,
 ) -> None:
     import matplotlib
 
@@ -481,6 +501,9 @@ def plot_waterfall(
     ax.set_ylabel(f"Time ({tunit})")
     cbar = fig.colorbar(im, ax=ax, pad=0.02)
     cbar.set_label("Power (dB, rel. full-scale)")
+    # Debug annotation: the radio's configured reference level, if recorded.
+    if ref_level is not None and np.isfinite(ref_level):
+        cbar.ax.set_title(f"Ref Level\n{ref_level:g} dBm", fontsize=8, pad=6)
 
     rows = spec.shape[0]
     title = (
@@ -591,6 +614,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--full-band",
         action="store_true",
         help="Show the full sample-rate span; disable bandwidth cropping.",
+    )
+    p.add_argument(
+        "--ref-level",
+        type=float,
+        help="Radio reference level (dB) shown as a debug label above the "
+        "color scale. Default: parameters.ref_level from meta.yaml, if present.",
     )
     p.add_argument(
         "--average",
@@ -711,6 +740,9 @@ def main(argv=None) -> None:
     abs_start = float(ts[start_frame]) if start_frame < len(ts) else None
     rec_t0 = float(ts[0]) if len(ts) else None
 
+    # Reference level: CLI override, else meta.yaml, else None (no annotation).
+    ref_level = args.ref_level if args.ref_level is not None else load_ref_level(rx_dir)
+
     schemes = []
     if not args.no_schemes:
         schemes_path = find_schemes(rx_dir, args.schemes)
@@ -733,6 +765,7 @@ def main(argv=None) -> None:
         total_samples,
         schemes,
         rec_t0,
+        ref_level=ref_level,
     )
 
 

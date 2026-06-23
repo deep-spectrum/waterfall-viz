@@ -102,6 +102,7 @@ def make_recording(
             "bandwidth": float(0.8 * fs),
             "capture_duration": float(captures * cap_dur),  # TOTAL (real-world quirk)
             "center_frequency": float(fc),
+            "ref_level": -20.0,
         },
     }
     with open(os.path.join(rx, "meta.yaml"), "w") as f:
@@ -465,6 +466,32 @@ def main():
             vmin_crop > vmin_full + 20,
             f"vmin full={vmin_full:.1f} dB -> cropped={vmin_crop:.1f} dB",
         )
+
+        # --- 10. optional ref_level debug annotation ---
+        print("\n[10] ref_level read from meta.yaml (debug annotation)")
+        check(
+            "ref_level read from parameters.ref_level",
+            wf.load_ref_level(rx_dir) == -20.0,
+            f"{wf.load_ref_level(rx_dir)}",
+        )
+        # the 'real' rx dir (section [0]) has no ref_level -> None, not a crash
+        check(
+            "absent ref_level returns None",
+            wf.load_ref_level(real) is None,
+        )
+        # CLI precedence: --ref-level overrides meta; 0 dB is honored (not None).
+        ns = wf.parse_args([rx_dir, "--ref-level", "5"])
+        eff = ns.ref_level if ns.ref_level is not None else wf.load_ref_level(rx_dir)
+        check("--ref-level overrides meta value", eff == 5.0, f"{eff}")
+        ns0 = wf.parse_args([rx_dir, "--ref-level", "0"])
+        check("--ref-level 0 is honored (not treated as unset)", ns0.ref_level == 0.0)
+        ns_none = wf.parse_args([rx_dir])
+        eff_none = (
+            ns_none.ref_level
+            if ns_none.ref_level is not None
+            else wf.load_ref_level(rx_dir)
+        )
+        check("no --ref-level falls back to meta", eff_none == -20.0, f"{eff_none}")
 
         print(f"\n==== {PASS} passed, {FAIL} failed ====")
         sys.exit(1 if FAIL else 0)

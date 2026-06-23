@@ -163,6 +163,7 @@ def main() -> None:
             "capture_duration": float(capture_duration),
             "center_frequency": float(args.center_freq),
             "stop_if_sample_loss": False,
+            "ref_level": -5.0
         },
     }
     with open(os.path.join(rx_dir, "meta.yaml"), "w") as f:
