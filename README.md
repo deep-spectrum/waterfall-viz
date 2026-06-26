@@ -9,7 +9,11 @@ raw captures: tones, interference, drift, sample loss, dead bands, etc.
 - **Few dependencies:** `iq-sdk` (+ its small deps), `numpy`, `pyyaml`, `matplotlib`.
 - **Big-file friendly:** by default only the plotted frames are read (time
   *striding*), so a multi-GB recording renders about as fast as a small one.
-  Partial / in-progress copies render the chunks present.
+  Partial / in-progress copies render the chunks present, and you can slice by
+  time, sample, or chunk range.
+- **Auto color normalization:** the frequency axis is confined to the occupied
+  band (`parameters.bandwidth`) by default, so the color scale fits the in-band
+  content instead of being dragged down by the quiet out-of-band noise floor.
 - **Transmitter overlay:** if a `schemes.yaml` is present, labeled time bands for
   each transmitted modulation burst are drawn on the waterfall, so you can see
   whether the receiver caught each scheme. `schemes.yaml` is a transmitter
@@ -78,15 +82,21 @@ Common options:
 | `--nfft` | `1024` | FFT size → number of frequency bins. |
 | `--window` | `hann` | `hann`, `hamming`, `blackman`, or `rect`. |
 | `--max-rows` | `2000` | Max time rows. Striding to this keeps huge files fast. |
-| `--start-sec` / `--start-sample` | `0` | Where to start reading. |
-| `--duration-sec` / `--num-frames` | whole file | How much to cover. |
+| `--start-sec` / `--start-sample` / `--start-chunk` | `0` | Where to start reading (seconds, samples, or chunk index). |
+| `--duration-sec` / `--num-frames` / `--end-chunk` | whole file | How much to cover (seconds, frames, or stop-before chunk index). |
 | `--average` | off | Average power across each stride window (reads **all** data in the extent; slower, smoother) instead of skipping. |
 | `--block-frames` | `4096` | Frames per batched FFT read under `--average`; caps peak memory. |
 | `--sample-rate` / `--center-freq` | from `meta.yaml` | Override axis calibration (Hz). |
+| `--bandwidth` / `--full-band` | `parameters.bandwidth` | Confine the frequency axis (and color normalization) to `center ± bandwidth/2`; `--full-band` shows the whole span. See [Bandwidth confinement](#bandwidth-confinement). |
+| `--ref-level` | `parameters.ref_level` | Radio reference level (dB) shown as a debug label above the color scale. |
 | `--cmap` | `viridis` | Matplotlib colormap. |
 | `--vmin` / `--vmax` | 5th / 99.5th pct | Color scale floor/ceiling (dB). |
 | `--schemes` / `--no-schemes` | auto-detect | Overlay TX modulation bursts from a `schemes.yaml` (auto-detected in the rx dir, then a sibling `tx*` dir); `--no-schemes` disables it. |
 | `--show` | off | Also open an interactive window. |
+
+The three start selectors are mutually exclusive, as are the three extent
+selectors. `--end-chunk` is an *absolute* stop-before index (exclusive), so
+`--start-chunk 10 --end-chunk 20` renders chunks `[10, 20)`.
 
 ### Large recordings
 
@@ -99,10 +109,35 @@ python waterfall.py /data/rec/rx0 --start-sec 2.0 --duration-sec 0.05 --nfft 409
 
 # Use every sample in a slice (no skipping) for a smoother image:
 python waterfall.py /data/rec/rx0 --duration-sec 0.1 --average
+
+# Render a specific chunk range (here chunks 10..19):
+python waterfall.py /data/rec/rx0 --start-chunk 10 --end-chunk 20
+
+# Just "from chunk 10 on" — renders a bounded default of 10 chunks:
+python waterfall.py /data/rec/rx0 --start-chunk 10
 ```
 
 The footer printed after rendering reports how many samples were actually read
 vs. the recording total, so you can see the striding in action.
+
+Chunk-range notes: `--end-chunk` past the last available chunk is clamped to the
+last one (with a note) — handy for partial copies. `--start-chunk` past the last
+chunk is an error. `--start-chunk` with no end selector renders a bounded
+default of 10 chunks, so "start here" never reads an entire multi-GB recording.
+
+### Bandwidth confinement
+
+A capture spans the full sample rate (the whole Nyquist width), but the signal
+of interest usually occupies a narrower band; outside it is just the receiver's
+out-of-band noise floor, far quieter than the in-band content. Since the default
+color scale is auto-fit to percentiles of the whole image, those quiet
+out-of-band bins drag `vmin` down and waste most of the colormap on empty
+spectrum — washing out subtle in-band structure.
+
+By default the frequency axis is confined to `center ± bandwidth/2` using
+`parameters.bandwidth` from `meta.yaml` (when present and below the sample rate),
+which tightens the color range onto the in-band content. Override the width with
+`--bandwidth HZ`, or disable cropping entirely with `--full-band`.
 
 ### Scheme overlay (transmitter schedule)
 
@@ -130,3 +165,9 @@ wrong place or off-screen. Use `--no-schemes` to turn the overlay off.
 - **Partial copies:** only the `iq*.c8` chunks present on disk are read; the run
   prints how many of N chunks are available, so in-progress copies still render.
 - Power is in dB relative to full-scale; a full-amplitude tone sits near 0 dB.
+- **Bandwidth confinement** crops the frequency axis to the occupied band by
+  default for better color normalization; see
+  [Bandwidth confinement](#bandwidth-confinement). Use `--full-band` to disable.
+- **Reference level:** if `parameters.ref_level` is set (or `--ref-level` is
+  given), it is shown as a debug label above the color scale. It is purely
+  informational — it does not affect the DSP or normalization.
